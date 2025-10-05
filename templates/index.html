@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤟 ASL Gesture Recognition</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; }
+        #canvas { border: 2px solid black; }
+        #prediction { font-size: 24px; margin: 20px; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+        .modal-content { background: white; margin: 15% auto; padding: 20px; width: 80%; max-width: 500px; }
+        .close { cursor: pointer; float: right; font-size: 20px; }
+    </style>
+</head>
+<body>
+    <h1>🤟 ASL Gesture Recognition</h1>
+    
+    <div>
+        <video id="video" width="640" height="480" autoplay style="display:none;"></video>
+        <canvas id="canvas" width="640" height="480"></canvas>
+        <div id="prediction">Waiting for gesture...</div>
+    </div>
+
+    <div>
+        <button onclick="toggleSpeak()">🔊 Toggle Speak</button>
+        <button onclick="showHelp()">❓ Help</button>
+        <button onclick="showChart()">📖 ASL Chart</button>
+        <button onclick="startWordMode()">✍️ Spell a Word</button>
+        <button onclick="finishWord()">✅ Finish Word</button>
+        <button onclick="startCollection()">📋 Collect Data</button>
+    </div>
+
+    <div id="helpModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('helpModal')">&times;</span>
+            <h2>❓ How to Use</h2>
+            <p>1️⃣ Allow camera access.</p>
+            <p>2️⃣ Show a gesture clearly.</p>
+            <p>3️⃣ The prediction appears below.</p>
+            <p>4️⃣ Use 🔊 to enable/disable speech.</p>
+            <p>5️⃣ Use ✍️ to spell words letter by letter.</p>
+            <p>6️⃣ Open 📖 to view ASL chart anytime.</p>
+        </div>
+    </div>
+
+    <div id="chartModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('chartModal')">&times;</span>
+            <h2>📖 ASL Alphabet Chart</h2>
+            <img src="https://www.startasl.com/wp-content/uploads/ASL_Alphabet_Chart.jpg" alt="ASL Chart" style="width:100%;">
+        </div>
+    </div>
+
+    <div id="wordModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('wordModal')">&times;</span>
+            <h2>✍️ Word Formation Mode</h2>
+            <p>Word: <span id="currentWord"></span></p>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const predictionDiv = document.getElementById('prediction');
+        let collecting = false;
+        let collectionLabel = '';
+
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => {
+                video.srcObject = stream;
+                video.play();
+                setInterval(() => {
+                    ctx.drawImage(video, 0, 0, 640, 480);
+                    const dataURL = canvas.toDataURL('image/jpeg', 0.8);
+                    socket.emit(collecting ? 'collect_frame' : 'frame', dataURL);
+                }, 100);
+            })
+            .catch(err => console.error('Webcam access error:', err));
+
+        socket.on('processed_frame', (dataURL) => {
+            const img = new Image();
+            img.src = dataURL;
+            img.onload = () => ctx.drawImage(img, 0, 0, 640, 480);
+        });
+
+        socket.on('speak', (text) => {
+            if ('speechSynthesis' in window) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                speechSynthesis.speak(utterance);
+            } else {
+                console.warn('Browser speech not supported');
+            }
+        });
+
+        socket.on('collection_status', (data) => {
+            if (data.status === 'success') {
+                alert(data.message);
+                collecting = false;
+            } else {
+                alert(data.message);
+            }
+        });
+
+        function toggleSpeak() {
+            fetch('/toggle_speak', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: !JSON.parse(predictionDiv.dataset.speakEnabled || 'true') })
+            }).then(res => res.json()).then(data => {
+                predictionDiv.dataset.speakEnabled = data.speak_enabled;
+            });
+        }
+
+        function showHelp() { document.getElementById('helpModal').style.display = 'block'; }
+        function showChart() { document.getElementById('chartModal').style.display = 'block'; }
+        function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+
+        function startWordMode() {
+            fetch('/start_word_mode', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('currentWord').textContent = '';
+                    document.getElementById('wordModal').style.display = 'block';
+                });
+        }
+
+        function finishWord() {
+            fetch('/finish_word', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('currentWord').textContent = data.word;
+                });
+        }
+
+        function startCollection() {
+            collectionLabel = prompt('Enter gesture label:');
+            if (collectionLabel) {
+                collecting = true;
+                fetch('/start_collection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ label: collectionLabel })
+                });
+            }
+        }
+
+        setInterval(() => {
+            fetch('/get_prediction')
+                .then(res => res.json())
+                .then(data => {
+                    predictionDiv.textContent = `Gesture: ${data.prediction}`;
+                    if (document.getElementById('wordModal').style.display === 'block') {
+                        document.getElementById('currentWord').textContent = data.prediction;
+                    }
+                });
+        }, 500);
+    </script>
+</body>
+</html>
